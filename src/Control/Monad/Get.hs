@@ -1,6 +1,8 @@
 {-# LANGUAGE FunctionalDependencies
            , DefaultSignatures
            , FlexibleInstances
+           , RankNTypes
+           , ScopedTypeVariables
            , TypeFamilies -- equality constraints for default signatures
            , UndecidableInstances -- lifted instances
    #-}
@@ -36,10 +38,18 @@ A default definition of 'gets' is provided for instances of 'MonadTrans' wrappin
 -}
     gets :: (s -> a) -> m a
     {-^ Apply a function to the current state and return the result. -}
-    default gets :: (m ~ t n, MonadTrans t, MonadGet s n)=> (s -> a) -> m a
-    gets = lift . gets
+    -- gets f = sandbox (getsDefault f)
+    -- default gets :: (m ~ t n, MonadTrans t, MonadGet s n)=> (s -> a) -> m a
+    -- gets = lift . gets
     -- gets = liftF' gets
-    {-# INLINE gets #-}
+    -- {-# INLINE gets #-}
+
+    sandbox :: MonadGet s m => (MonadState s m => m a) -> m a
+    {-^ Run a 'MonadState' action without affecting the overall state. -}
+    default sandbox :: (MonadState s m)=> (MonadState s m => m a) -> m a
+    sandbox mx = get >>= \ s -> mx <* put s
+    {-# INLINE sandbox #-}
+
 
 get :: (MonadGet s m)=> m s
 {-^ Return the current state. -}
@@ -62,22 +72,22 @@ Default definitions of 'state' are provided for instances of 'MonadTrans' wrappi
 
     If you manually define @state@, make sure that @state f@ = @do{ ~(x, s) <- 'gets' f; 'put' s; 'pure' x }@
     -}
-    default state ::
-        (m ~ t n, MonadTrans t, MonadState s n)=> (s -> (a, s)) -> m a
-    state = lift . state
+    -- default state ::
+    --     (m ~ t n, MonadTrans t, MonadState s n)=> (s -> (a, s)) -> m a
+    -- state = lift . state
     -- state = liftF' state
-    {-# INLINE state #-}
+    -- {-# INLINE state #-}
 
     put :: (MonadState s m)=> s -> m ()
     {-^ Replace the state.
 
     If you manually define @put@, make sure that @put s@ = @'state' (\ _ -> ((), s))@
     -}
-    default put ::
-        (m ~ t n, MonadTrans t, MonadState s n)=> s -> m ()
-    put = lift . put
+    -- default put ::
+    --     (m ~ t n, MonadTrans t, MonadState s n)=> s -> m ()
+    -- put = lift . put
     -- put = liftF' put
-    {-# INLINE put #-}
+    -- {-# INLINE put #-}
 
 modify, modify' :: (MonadState s m)=> (s -> s) -> m ()
 {-^ Use a function to update the state. @modify'@ evaluates the new state before returning; @modify@ may not.
@@ -106,6 +116,9 @@ getsDefault f = state (\ s -> (f s, s))
 instance (Monad m)=> MonadGet s (Lazy.StateT s m) where
     gets = getsDefault
     {-# INLINE gets #-}
+    sandbox mx =
+        Lazy.StateT (\ s -> (\ ~(x, _) -> (x, s)) `fmap` Lazy.runStateT mx s)
+    {-# INLINE sandbox #-}
 
 instance (Monad m)=> MonadState s (Lazy.StateT s m) where
     state = Lazy.state
@@ -116,6 +129,9 @@ instance (Monad m)=> MonadState s (Lazy.StateT s m) where
 instance (Monad m)=> MonadGet s (Strict.StateT s m) where
     gets = getsDefault
     {-# INLINE gets #-}
+    sandbox mx =
+        Strict.StateT (\ s -> (\ (x, _) -> (x, s)) `fmap` Strict.runStateT mx s)
+    {-# INLINE sandbox #-}
 
 instance (Monad m)=> MonadState s (Strict.StateT s m) where
     state = Strict.state
@@ -135,29 +151,94 @@ instance (Monad m)=> MonadState s (RWS.RWST r w s m) where
 
 
 --- Lifted Instances ---
-instance (MonadGet s m, Monoid w)=> MonadGet s (AccumT w m)
-instance (MonadState s m, Monoid w)=> MonadState s (AccumT w m)
+instance (MonadGet s m, Monoid w)=> MonadGet s (AccumT w m) where
+    gets = lift . gets
+    {-# INLINE gets #-}
+    sandbox mx = AccumT (\ w -> sandbox (runAccumT mx w))
+    {-# INLINE sandbox #-}
+instance (MonadState s m, Monoid w)=> MonadState s (AccumT w m) where
+    put = lift . put
+    {-# INLINE put #-}
+    state = lift . state
+    {-# INLINE state #-}
 
-instance (MonadGet s m)=> MonadGet s (ContT r m)
-instance (MonadState s m)=> MonadState s (ContT r m)
+instance (MonadGet s m)=> MonadGet s (ContT r m) where
+    gets = lift . gets
+    {-# INLINE gets #-}
+    sandbox mx = ContT (\ f -> sandbox (runContT mx f))
+    {-# INLINE sandbox #-}
+instance (MonadState s m)=> MonadState s (ContT r m) where
+    put = lift . put
+    {-# INLINE put #-}
+    state = lift . state
+    {-# INLINE state #-}
 
-instance (MonadGet s m)=> MonadGet s (ExceptT e m)
-instance (MonadState s m)=> MonadState s (ExceptT e m)
+instance (MonadGet s m)=> MonadGet s (ExceptT e m) where
+    gets = lift . gets
+    {-# INLINE gets #-}
+    sandbox mx = ExceptT (sandbox (runExceptT mx))
+    {-# INLINE sandbox #-}
+instance (MonadState s m)=> MonadState s (ExceptT e m) where
+    put = lift . put
+    {-# INLINE put #-}
+    state = lift . state
+    {-# INLINE state #-}
 
-instance (MonadGet s m)=> MonadGet s (MaybeT m)
-instance (MonadState s m)=> MonadState s (MaybeT m)
+instance (MonadGet s m)=> MonadGet s (MaybeT m) where
+    gets = lift . gets
+    {-# INLINE gets #-}
+    sandbox mx = MaybeT (sandbox (runMaybeT mx))
+    {-# INLINE sandbox #-}
+instance (MonadState s m)=> MonadState s (MaybeT m) where
+    put = lift . put
+    {-# INLINE put #-}
+    state = lift . state
+    {-# INLINE state #-}
 
-instance (MonadGet s m)=> MonadGet s (ReaderT r m)
-instance (MonadState s m)=> MonadState s (ReaderT r m)
+instance (MonadGet s m)=> MonadGet s (ReaderT r m) where
+    gets = lift . gets
+    {-# INLINE gets #-}
+    sandbox mx = ReaderT (\ r -> sandbox (runReaderT mx r))
+    {-# INLINE sandbox #-}
+instance (MonadState s m)=> MonadState s (ReaderT r m) where
+    put = lift . put
+    {-# INLINE put #-}
+    state = lift . state
+    {-# INLINE state #-}
 
-instance (MonadGet s m)=> MonadGet s (SelectT r m)
-instance (MonadState s m)=> MonadState s (SelectT r m)
+instance (MonadGet s m)=> MonadGet s (SelectT r m) where
+    gets = lift . gets
+    {-# INLINE gets #-}
+    sandbox mx = SelectT (\ f -> sandbox (runSelectT mx f))
+    {-# INLINE sandbox #-}
+instance (MonadState s m)=> MonadState s (SelectT r m) where
+    put = lift . put
+    {-# INLINE put #-}
+    state = lift . state
+    {-# INLINE state #-}
 
-instance (MonadGet s m, Monoid w)=> MonadGet s (Lazy.WriterT w m)
-instance (MonadState s m, Monoid w)=> MonadState s (Lazy.WriterT w m)
+instance (MonadGet s m, Monoid w)=> MonadGet s (Lazy.WriterT w m) where
+    gets = lift . gets
+    {-# INLINE gets #-}
+    sandbox mx = Lazy.WriterT (sandbox (Lazy.runWriterT mx))
+    {-# INLINE sandbox #-}
+instance (MonadState s m, Monoid w)=> MonadState s (Lazy.WriterT w m) where
+    put = lift . put
+    {-# INLINE put #-}
+    state = lift . state
+    {-# INLINE state #-}
 
-instance (MonadGet s m, Monoid w)=> MonadGet s (Strict.WriterT w m)
-instance (MonadState s m, Monoid w)=> MonadState s (Strict.WriterT w m)
+instance (MonadGet s m, Monoid w)=> MonadGet s (Strict.WriterT w m) where
+    gets = lift . gets
+    {-# INLINE gets #-}
+    sandbox mx = Strict.writerT (sandbox (Strict.runWriterT mx))
+    {-# INLINE sandbox #-}
+instance (MonadState s m, Monoid w)=> MonadState s (Strict.WriterT w m) where
+    put = lift . put
+    {-# INLINE put #-}
+    state = lift . state
+    {-# INLINE state #-}
+
 
 
 {- Does it make more sense to provide default MonadTrans lifted methods, or to interdefine the methods and provide a newtype WrapMonadTrans for deriving via WrapMonadTrans?
@@ -183,11 +264,11 @@ instance (MonadState s m, Monoid w)=> MonadState s (Strict.WriterT w m)
 --     put = lift . put
 --     {-# INLINE put #-}
 
-liftF' :: (MonadTrans t, Monad m)=> (a -> m b) -> a -> t m b
-{-^ Lift a function into a monad transformer, strictly evaluating the function. This can help force dictionary unpacking. -}
-liftF' = (!.!) lift
-{-# INLINE liftF' #-}
+-- liftF' :: (MonadTrans t, Monad m)=> (a -> m b) -> a -> t m b
+-- {-^ Lift a function into a monad transformer, strictly evaluating the function. This can help force dictionary unpacking. -}
+-- liftF' = (!.!) lift
+-- {-# INLINE liftF' #-}
 
-(!.!) :: (b -> c) -> (a -> b) -> a -> c
-(!.!) f g = f `seq` g `seq` \ x -> f (g x)
-{-# INLINE (!.!) #-}
+-- (!.!) :: (b -> c) -> (a -> b) -> a -> c
+-- (!.!) f g = f `seq` g `seq` \ x -> f (g x)
+-- {-# INLINE (!.!) #-}

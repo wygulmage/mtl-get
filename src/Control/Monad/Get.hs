@@ -1,9 +1,7 @@
 {-# LANGUAGE FunctionalDependencies
            , DefaultSignatures
            , FlexibleInstances
-           , RankNTypes
-           , ScopedTypeVariables
-           , TypeFamilies -- equality constraints for default signatures
+           , RankNTypes -- for sandbox
            , UndecidableInstances -- lifted instances
    #-}
 
@@ -17,7 +15,8 @@ MonadState (..), modify, modify', getsDefault, stateDefault, putDefault,
 import Control.Monad.Trans.Class
 import qualified Control.Monad.Trans.State.Lazy as Lazy
 import qualified Control.Monad.Trans.State.Strict as Strict
-import qualified Control.Monad.Trans.RWS.CPS as RWS
+import qualified Control.Monad.Trans.RWS.CPS as RWS.Strict
+import qualified Control.Monad.Trans.RWS.Lazy as RWS.Lazy
 import Control.Monad.Trans.Accum
 import Control.Monad.Trans.Cont
 import Control.Monad.Trans.Except
@@ -47,7 +46,7 @@ A default definition of 'gets' is provided for instances of 'MonadTrans' wrappin
     sandbox :: MonadGet s m => (MonadState s m => m a) -> m a
     {-^ Run a 'MonadState' action without affecting the overall state. -}
     default sandbox :: (MonadState s m)=> (MonadState s m => m a) -> m a
-    sandbox mx = get >>= \ s -> mx <* put s
+    sandbox = sandboxDefault
     {-# INLINE sandbox #-}
 
 
@@ -112,6 +111,11 @@ getsDefault :: (MonadState s m)=> (s -> a) -> m a
 getsDefault f = state (\ s -> (f s, s))
 {-# INLINE getsDefault #-}
 
+sandboxDefault :: (MonadState s m)=> (MonadState s m => m a) -> m a
+{-^ @sandboxDefault@ is a suitable definition for 'sandbox' if you manually define 'gets'. -}
+sandboxDefault mx = get >>= \ s -> mx <* put s
+{-# INLINE sandboxDefault #-}
+
 
 instance (Monad m)=> MonadGet s (Lazy.StateT s m) where
     gets = getsDefault
@@ -139,14 +143,26 @@ instance (Monad m)=> MonadState s (Strict.StateT s m) where
     put = putDefault
     {-# INLINE put #-}
 
-instance (Monad m)=> MonadGet s (RWS.RWST r w s m) where
-    gets = RWS.gets
+
+instance (Monad m, Monoid w)=> MonadGet s (RWS.Lazy.RWST r w s m) where
+    gets = RWS.Lazy.gets
     {-# INLINE gets #-}
 
-instance (Monad m)=> MonadState s (RWS.RWST r w s m) where
-    state = RWS.state
+instance (Monad m, Monoid w)=> MonadState s (RWS.Lazy.RWST r w s m) where
+    state = RWS.Lazy.state
     {-# INLINE state #-}
-    put = RWS.put
+    put = RWS.Lazy.put
+    {-# INLINE put #-}
+
+
+instance (Monad m)=> MonadGet s (RWS.Strict.RWST r w s m) where
+    gets = RWS.Strict.gets
+    {-# INLINE gets #-}
+
+instance (Monad m)=> MonadState s (RWS.Strict.RWST r w s m) where
+    state = RWS.Strict.state
+    {-# INLINE state #-}
+    put = RWS.Strict.put
     {-# INLINE put #-}
 
 
@@ -242,27 +258,12 @@ instance (MonadState s m, Monoid w)=> MonadState s (Strict.WriterT w m) where
 
 
 {- Does it make more sense to provide default MonadTrans lifted methods, or to interdefine the methods and provide a newtype WrapMonadTrans for deriving via WrapMonadTrans?
+This would require
+* PolyKinds
+* GeneralizedNewtypeDeriving
+* DerivingVia
+* StandAloneDeriving
 -}
-
--- newtype WrapMonadTrans (t :: (Type -> Type) -> Type -> Type) m a = WrapMonadTrans (t m a)
---   deriving (Functor, Applicative, Monad)
-
--- instance (MonadTrans t)=> MonadTrans (WrapMonadTrans t) where
---     lift = WrapMonadTrans . lift
---     {-# INLINE lift #-}
-
--- instance
---   (MonadTrans t, Monad (t m), MonadGet s m)=> MonadGet s (WrapMonadTrans t m) where
---     gets = lift . gets
---     {-# INLINE gets #-}
-
--- instance
---   (MonadTrans t, Monad (t m), MonadState s m)=>
---   MonadState s (WrapMonadTrans t m) where
---     state = lift . state
---     {-# INLINE state #-}
---     put = lift . put
---     {-# INLINE put #-}
 
 -- liftF' :: (MonadTrans t, Monad m)=> (a -> m b) -> a -> t m b
 -- {-^ Lift a function into a monad transformer, strictly evaluating the function. This can help force dictionary unpacking. -}
